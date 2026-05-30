@@ -68,7 +68,43 @@ def query_shortest_route(
         dict with keys: found, origin_id, destination_id,
                         total_time_min, path (list of station dicts), legs
     """
-    raise NotImplementedError("TODO: implement after designing your graph schema")
+    if network == "auto":
+        network = "metro" if origin_id.upper().startswith("MS") else "rail"
+
+    label = "MetroStation" if network == "metro" else "NationalRailStation"
+    rel   = "METRO_LINK"   if network == "metro" else "RAIL_LINK"
+
+    cypher = f"""
+        MATCH (start:{label} {{station_id: $origin}})
+        MATCH (end:{label}   {{station_id: $destination}})
+        CALL apoc.algo.dijkstra(start, end, '{rel}', 'travel_time_min')
+        YIELD path, weight
+        RETURN
+            [n IN nodes(path) | n.station_id] AS ids,
+            [n IN nodes(path) | n.name]       AS names,
+            weight AS total_time_min
+    """
+
+    with _driver() as driver:
+        with driver.session() as session:
+            row = session.run(cypher, origin=origin_id, destination=destination_id).single()
+
+    if not row:
+        return {"found": False, "origin_id": origin_id, "destination_id": destination_id}
+
+    stations = [{"station_id": i, "name": n} for i, n in zip(row["ids"], row["names"])]
+    legs = [
+        {"from": stations[i], "to": stations[i+1]}
+        for i in range(len(stations) - 1)
+    ]
+    return {
+        "found":          True,
+        "origin_id":      origin_id,
+        "destination_id": destination_id,
+        "total_time_min": row["total_time_min"],
+        "path":           stations,
+        "legs":           legs,
+    }
 
 
 # ── CHEAPEST ROUTE (Dijkstra by fare) ────────────────────────────────────────
@@ -91,7 +127,41 @@ def query_cheapest_route(
     Returns:
         dict with found, total_fare_usd (approximate), stations, legs
     """
-    raise NotImplementedError("TODO: implement after designing your graph schema")
+    if network == "auto":
+        network = "metro" if origin_id.upper().startswith("MS") else "rail"
+
+    label    = "MetroStation" if network == "metro" else "NationalRailStation"
+    rel      = "METRO_LINK"   if network == "metro" else "RAIL_LINK"
+    fare_key = "base_fare_usd" if network == "metro" else (
+        "first_fare_usd" if fare_class == "first" else "standard_fare_usd"
+    )
+
+    cypher = f"""
+        MATCH (start:{label} {{station_id: $origin}})
+        MATCH (end:{label}   {{station_id: $destination}})
+        CALL apoc.algo.dijkstra(start, end, '{rel}', '{fare_key}')
+        YIELD path, weight
+        RETURN
+            [n IN nodes(path) | n.station_id] AS ids,
+            [n IN nodes(path) | n.name]       AS names,
+            weight AS total_fare_usd
+    """
+
+    with _driver() as driver:
+        with driver.session() as session:
+            row = session.run(cypher, origin=origin_id, destination=destination_id).single()
+
+    if not row:
+        return {"found": False, "origin_id": origin_id, "destination_id": destination_id}
+
+    stations = [{"station_id": i, "name": n} for i, n in zip(row["ids"], row["names"])]
+    return {
+        "found":          True,
+        "origin_id":      origin_id,
+        "destination_id": destination_id,
+        "total_fare_usd": row["total_fare_usd"],
+        "stations":       stations,
+    }
 
 
 # ── ALTERNATIVE ROUTES (avoiding a station) ───────────────────────────────────
@@ -117,7 +187,43 @@ def query_alternative_routes(
     Returns:
         List of routes, each route is a list of leg dicts
     """
-    raise NotImplementedError("TODO: implement after designing your graph schema")
+    if network == "auto":
+        network = "metro" if origin_id.upper().startswith("MS") else "rail"
+
+    label = "MetroStation" if network == "metro" else "NationalRailStation"
+    rel   = "METRO_LINK"   if network == "metro" else "RAIL_LINK"
+
+    cypher = f"""
+        MATCH path = (start:{label} {{station_id: $origin}})
+                     -[:{rel}*]->
+                     (end:{label}   {{station_id: $destination}})
+        WHERE NONE(n IN nodes(path) WHERE n.station_id = $avoid)
+        RETURN [n IN nodes(path) | n.station_id] AS ids,
+               [n IN nodes(path) | n.name]       AS names,
+               reduce(t = 0, r IN relationships(path) | t + r.travel_time_min) AS total_time
+        ORDER BY total_time
+        LIMIT $max_routes
+    """
+
+    with _driver() as driver:
+        with driver.session() as session:
+            rows = session.run(
+                cypher,
+                origin=origin_id,
+                destination=destination_id,
+                avoid=avoid_station_id,
+                max_routes=max_routes,
+            ).data()
+
+    routes = []
+    for row in rows:
+        stations = [{"station_id": i, "name": n} for i, n in zip(row["ids"], row["names"])]
+        legs = [
+            {"from": stations[i], "to": stations[i+1], "total_time_min": row["total_time"]}
+            for i in range(len(stations) - 1)
+        ]
+        routes.append(legs)
+    return routes
 
 
 # ── CROSS-NETWORK INTERCHANGE PATH ───────────────────────────────────────────
@@ -134,7 +240,34 @@ def query_interchange_path(origin_id: str, destination_id: str) -> dict:
     Returns:
         dict with found, stations list, interchange points, total_time_min
     """
-    raise NotImplementedError("TODO: implement after designing your graph schema")
+    cypher = """
+        MATCH (start {station_id: $origin})
+        MATCH (end   {station_id: $destination})
+        MATCH path = shortestPath(
+            (start)-[:METRO_LINK|RAIL_LINK|INTERCHANGE_TO*]-(end)
+        )
+        RETURN [n IN nodes(path) | n.station_id] AS ids,
+               [n IN nodes(path) | n.name]       AS names,
+               reduce(t = 0, r IN relationships(path) |
+                   t + coalesce(r.travel_time_min, r.transfer_time_min, 5)
+               ) AS total_time_min
+    """
+
+    with _driver() as driver:
+        with driver.session() as session:
+            row = session.run(cypher, origin=origin_id, destination=destination_id).single()
+
+    if not row:
+        return {"found": False, "origin_id": origin_id, "destination_id": destination_id}
+
+    stations = [{"station_id": i, "name": n} for i, n in zip(row["ids"], row["names"])]
+    return {
+        "found":          True,
+        "origin_id":      origin_id,
+        "destination_id": destination_id,
+        "total_time_min": row["total_time_min"],
+        "stations":       stations,
+    }
 
 
 # ── DELAY RIPPLE ANALYSIS ─────────────────────────────────────────────────────
@@ -151,7 +284,30 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
     Returns:
         List of dicts: {station_id, name, hops_away, lines_affected}
     """
-    raise NotImplementedError("TODO: implement after designing your graph schema")
+    cypher = f"""
+        MATCH (disrupted {{station_id: $station_id}})
+        MATCH path = (disrupted)-[:METRO_LINK|RAIL_LINK*1..{hops}]-(affected)
+        WHERE affected.station_id <> $station_id
+        RETURN affected.station_id AS station_id,
+               affected.name       AS name,
+               affected.lines      AS lines,
+               min(length(path))   AS hops_away
+        ORDER BY hops_away
+    """
+
+    with _driver() as driver:
+        with driver.session() as session:
+            rows = session.run(cypher, station_id=delayed_station_id, hops=hops).data()
+
+    return [
+        {
+            "station_id":     r["station_id"],
+            "name":           r["name"],
+            "hops_away":      r["hops_away"],
+            "lines_affected": r["lines"],
+        }
+        for r in rows
+    ]
 
 
 # ── STATION CONNECTIONS ───────────────────────────────────────────────────────
@@ -163,4 +319,18 @@ def query_station_connections(station_id: str) -> list[dict]:
     Args:
         station_id: e.g. "MS01" or "NR01"
     """
-    raise NotImplementedError("TODO: implement after designing your graph schema")
+    cypher = """
+        MATCH (s {station_id: $station_id})-[r:METRO_LINK|RAIL_LINK|INTERCHANGE_TO]->(n)
+        RETURN n.station_id AS station_id,
+               n.name       AS name,
+               type(r)      AS relationship_type,
+               r.line       AS line,
+               coalesce(r.travel_time_min, r.transfer_time_min) AS travel_time_min
+        ORDER BY travel_time_min
+    """
+
+    with _driver() as driver:
+        with driver.session() as session:
+            rows = session.run(cypher, station_id=station_id).data()
+
+    return [dict(r) for r in rows]
