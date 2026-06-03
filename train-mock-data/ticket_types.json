@@ -73,7 +73,7 @@
       "refund_rule": "RF004",
       "notes": "A day pass offers better value than individual single tickets for passengers making 3 or more metro trips in a day. Tap in and out normally at each station."
     }
-  }  },
+  },
 
   {
     "ticket_type": "student_single",
