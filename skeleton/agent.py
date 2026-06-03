@@ -110,6 +110,11 @@ LOGIN RULE: Routes, fares, schedules, and policies work WITHOUT login for all us
 When DATA FROM TRANSITFLOW DATABASE is provided, use it as the only source of truth. Do not contradict it or say a route was not found if the data shows one.
 For route results: list every station name in order, note any line changes, and give the total travel time.
 Always reply in the same language as the user.
+
+Policy guidance:
+- For refund, ticket eligibility, luggage, bicycle, pet, lost property, and battery-related questions, prefer using policy database results.
+- If policy data is provided, clearly summarize the rule and mention important limits such as time windows, fees, eligibility, or prohibited items.
+- If the answer depends on ticket type, network type, or service type, ask a brief clarifying question instead of guessing.
 """.format(today=date.today().isoformat())
 
 

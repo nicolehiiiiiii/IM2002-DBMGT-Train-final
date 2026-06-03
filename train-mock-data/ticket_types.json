@@ -73,5 +73,83 @@
       "refund_rule": "RF004",
       "notes": "A day pass offers better value than individual single tickets for passengers making 3 or more metro trips in a day. Tap in and out normally at each station."
     }
+  },
+
+  {
+    "ticket_type": "student_single",
+    "display_name": "Student Single Ticket",
+    "available_on": ["metro", "national_rail"],
+    "description": "A discounted single ticket for eligible students. Passengers must present a valid student ID when requested.",
+    "discount_policy": {
+      "discount_percent": 20,
+      "eligibility": "Full-time students with a valid student ID",
+      "verification_required": true,
+      "verification_method": "Student ID may be checked during ticket inspection"
+    },
+    "metro": {
+      "pricing_model": "discounted_stops_based",
+      "formula": "amount = (base_fare_usd + (stops_travelled × per_stop_rate_usd)) × 0.80",
+      "fare_class": null,
+      "seat_assignment": false,
+      "validity": "Travel date only. Ticket expires at midnight on the travel date.",
+      "advance_purchase": false,
+      "changes_allowed": false,
+      "refundable": true,
+      "refund_rule": "RF003"
+    },
+    "national_rail": {
+      "pricing_model": "discounted_stops_based_with_fare_class",
+      "formula": "amount = regular single fare × 0.80",
+      "fare_classes": ["standard"],
+      "seat_assignment": true,
+      "validity": "Selected travel date and scheduled service only.",
+      "advance_purchase": true,
+      "advance_purchase_max_days": 90,
+      "changes_allowed": true,
+      "change_fee_usd": 1.00,
+      "change_deadline": "At least 24 hours before scheduled departure",
+      "refundable": true,
+      "refund_rule": "RF001 (normal service), RF002 (express service)",
+      "notes": "Student tickets are not available for first class."
+    }
+  },
+
+  {
+    "ticket_type": "senior_single",
+    "display_name": "Senior Single Ticket",
+    "available_on": ["metro", "national_rail"],
+    "description": "A discounted single ticket for senior passengers aged 65 or above.",
+    "discount_policy": {
+      "discount_percent": 50,
+      "eligibility": "Passengers aged 65 or above",
+      "verification_required": true,
+      "verification_method": "Government-issued ID may be checked during ticket inspection"
+    },
+    "metro": {
+      "pricing_model": "discounted_stops_based",
+      "formula": "amount = (base_fare_usd + (stops_travelled × per_stop_rate_usd)) × 0.50",
+      "fare_class": null,
+      "seat_assignment": false,
+      "validity": "Travel date only. Ticket expires at midnight on the travel date.",
+      "advance_purchase": false,
+      "changes_allowed": false,
+      "refundable": true,
+      "refund_rule": "RF003"
+    },
+    "national_rail": {
+      "pricing_model": "discounted_stops_based_with_fare_class",
+      "formula": "amount = regular single fare × 0.50",
+      "fare_classes": ["standard"],
+      "seat_assignment": true,
+      "validity": "Selected travel date and scheduled service only.",
+      "advance_purchase": true,
+      "advance_purchase_max_days": 90,
+      "changes_allowed": true,
+      "change_fee_usd": 1.00,
+      "change_deadline": "At least 24 hours before scheduled departure",
+      "refundable": true,
+      "refund_rule": "RF001 (normal service), RF002 (express service)",
+      "notes": "Senior tickets are not available for first class."
+    }
   }
 ]

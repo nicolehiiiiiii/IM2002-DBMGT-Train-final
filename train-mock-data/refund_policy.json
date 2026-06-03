@@ -170,5 +170,24 @@
       }
     ],
     "exclusions": "Delays caused by third-party events (extreme weather, security incidents, government directives, or passenger-caused incidents) are not eligible for compensation."
+  },
+
+  {
+    "policy_id": "RF006",
+    "label": "Typhoon and Natural Disaster Refund Policy",
+    "applies_to": {
+      "network_type": "all",
+      "ticket_types": ["single", "return", "day_pass"]
+    },
+    "cancellation_windows": [
+      {
+        "window_id": "RF006_W1",
+        "label": "Full Refund",
+        "condition": "Service cancelled due to typhoon, earthquake, flood, or other natural disaster",
+        "refund_percent": 100,
+        "admin_fee_usd": 0.00
+      }
+    ],
+    "notes": "Passengers may apply for a full refund within 365 days of the cancelled service."
   }
 ]
