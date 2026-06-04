@@ -75,30 +75,45 @@ def query_national_rail_availability(
     destination_id: str,
     travel_date: Optional[str] = None,
 ) -> list[dict]:
-    """
-    查詢台鐵班次與剩餘座位
-    """
-    # 這裡實作一般的車次查詢，串接 schedules 與車站
     sql = """
-        SELECT 
+        SELECT
             s.train_id AS schedule_id,
             s.route_id,
-            s.departure_time,
-            s.arrival_time,
-            (SELECT COUNT(*) FROM seat_layouts WHERE train_id = s.train_id) AS total_seats,
-            (SELECT COUNT(*) FROM bookings WHERE train_id = s.train_id AND travel_date = %s AND status = 'confirmed') AS booked_seats
+            s.departure_time::text,
+            s.arrival_time::text,
+            o.stop_order AS origin_stop_order,
+            d.stop_order AS destination_stop_order,
+            d.stop_order - o.stop_order AS stops_travelled,
+            orig_st.name AS origin_name,
+            dest_st.name AS destination_name,
+            (
+                SELECT COUNT(*)
+                FROM seat_layouts sl
+                WHERE sl.train_id = s.train_id
+            ) AS total_seats,
+            (
+                SELECT COUNT(*)
+                FROM bookings b
+                WHERE b.train_id = s.train_id
+                  AND b.status = 'confirmed'
+                  AND (%s::date IS NULL OR b.travel_date = %s::date)
+            ) AS booked_seats
         FROM schedules s
-        WHERE s.route_id LIKE 'NR%%'
+        JOIN schedule_stops o ON o.train_id = s.train_id AND o.station_id = %s
+        JOIN schedule_stops d ON d.train_id = s.train_id AND d.station_id = %s
+        JOIN national_rail_stations orig_st ON orig_st.station_id = %s
+        JOIN national_rail_stations dest_st ON dest_st.station_id = %s
+        WHERE o.stop_order < d.stop_order
     """
-    # 預設一個日期防空值
-    t_date = travel_date or "2026-05-29"
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, (t_date,))
-            results = cur.fetchall()
-            for r in results:
-                r["available_seats"] = max(0, r["total_seats"] - r["booked_seats"])
-            return [dict(row) for row in results]
+            cur.execute(sql, (travel_date, travel_date, origin_id, destination_id, origin_id, destination_id))
+            results = []
+            for r in cur.fetchall():
+                row = dict(r)
+                row["available_seats"] = max(0, row["total_seats"] - row["booked_seats"])
+                results.append(row)
+            return results
 
 
 def query_national_rail_fare(

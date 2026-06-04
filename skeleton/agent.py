@@ -703,11 +703,8 @@ JSON:"""
         tool_name = call.get("name", "")
         params    = call.get("params") or call.get("parameters", {})
 
-        # Skip calls with empty string values — LLM failed to extract params
-        if any(v == "" for v in params.values()):
-            if debug:
-                debug_info.append(f"**Skipped** `{tool_name}` — empty params: {params}")
-            continue
+        # 把空字串的參數改成 None，避免選填欄位導致整個 tool call 被跳過
+        params = {k: (None if v == "" else v) for k, v in params.items()}
 
         if debug:
             debug_info.append(f"**Calling:** `{tool_name}({params})`")
