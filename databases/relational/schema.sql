@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS bookings (
     train_id      VARCHAR(20) REFERENCES schedules(train_id) ON DELETE CASCADE,
     seat_number   VARCHAR(10) NOT NULL,
     booking_time  VARCHAR(30) NOT NULL,
+    travel_date   VARCHAR(20),
     status        VARCHAR(20) NOT NULL
 );
 
