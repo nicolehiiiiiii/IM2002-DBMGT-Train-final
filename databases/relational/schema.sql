@@ -83,9 +83,9 @@ CREATE TABLE IF NOT EXISTS bookings (
     user_id       VARCHAR(20) NOT NULL,
     train_id      VARCHAR(20) REFERENCES schedules(train_id) ON DELETE CASCADE,
     seat_number   VARCHAR(10) NOT NULL,
-    booking_time  TIMESTAMPTZ NOT NULL,   
-    travel_date   DATE,                
-    status        VARCHAR(20) NOT NULL CHECK (status IN ('confirmed', 'completed', 'cancelled'))
+    booking_time  VARCHAR(30) NOT NULL,
+    travel_date   VARCHAR(20),
+    status        VARCHAR(20) NOT NULL
 );
 
 -- 1. 座位配置表

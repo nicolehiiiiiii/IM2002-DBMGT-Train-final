@@ -224,7 +224,42 @@ def query_available_seats(
                     "column": col_num
                 })
             return results
-
+          
+def auto_select_adjacent_seats(
+    schedule_id: str,
+    travel_date: str,
+    fare_class: str,
+    count: int = 2,
+) -> list[dict]:
+    """
+    自動選取相鄰的空位（例如兩人同行想坐在一起）。
+    
+    Args:
+        schedule_id: 班次 ID，例如 "NR_SCH01"
+        travel_date: 旅遊日期，例如 "2026-06-01"
+        fare_class:  艙等，"standard" 或 "first"
+        count:       需要幾個相鄰座位，預設 2
+    
+    Returns:
+        List of dicts，每個 dict 包含 seat_id、coach、row、column
+    """
+    available = query_available_seats(schedule_id, travel_date, fare_class)
+    if len(available) < count:
+        return []
+    
+    # 依照 coach + row 分組，找同一排有足夠空位的座位
+    from collections import defaultdict
+    by_row = defaultdict(list)
+    for seat in available:
+        key = (seat["coach"], seat["row"])
+        by_row[key].append(seat)
+    
+    for seats_in_row in by_row.values():
+        if len(seats_in_row) >= count:
+            return seats_in_row[:count]
+    
+    # 找不到相鄰的，就回傳前 count 個可用座位
+    return available[:count]
 
 # ── USER & BOOKING QUERIES ────────────────────────────────────────────────────
 

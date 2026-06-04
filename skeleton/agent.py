@@ -111,12 +111,10 @@ When DATA FROM TRANSITFLOW DATABASE is provided, use it as the only source of tr
 For route results: list every station name in order, note any line changes, and give the total travel time.
 Always reply in the same language as the user.
 
-For national rail availability results:
-- departure_time and arrival_time are the FIRST and LAST train of the day, not journey duration.
-- stops_travelled is the number of stops between origin and destination.
-- Do NOT calculate journey duration from departure_time and arrival_time.
-- available_seats shows how many seats are free on that schedule.
-- A schedule with available_seats = 0 means fully booked.
+Policy guidance:
+- For refund, ticket eligibility, luggage, bicycle, pet, lost property, and battery-related questions, prefer using policy database results.
+- If policy data is provided, clearly summarize the rule and mention important limits such as time windows, fees, eligibility, or prohibited items.
+- If the answer depends on ticket type, network type, or service type, ask a brief clarifying question instead of guessing.
 """.format(today=date.today().isoformat())
 
 

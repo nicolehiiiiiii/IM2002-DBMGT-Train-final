@@ -118,16 +118,15 @@ def seed_national_rail_schedules(cur):
         arr_time = s.get("last_train_time", "00:00")
         rail_schedules.append((t_id, route_id, dep_time, arr_time))
 
-        for idx, station_id in enumerate(s.get("stops_in_order", []), start=1):
-            rail_stops.append((t_id, station_id, None, None, idx))  
+        travel_times = s.get("travel_time_from_origin_min", {})
+        for station_id in s.get("stops_in_order", []):
+            offset = travel_times.get(station_id, 0)
+            time_str = f"+{offset}m"
+            rail_stops.append((t_id, station_id, time_str, time_str))
 
-    insert_many(cur, "schedules",
-                ["train_id", "route_id", "departure_time", "arrival_time"],
-                rail_schedules)
-    n = insert_many(cur, "schedule_stops",
-                    ["train_id", "station_id", "arrival_time", "departure_time", "stop_order"],
-                    rail_stops)
-    print(f"  national_rail_schedules: {len(rail_schedules)} rows, stops: {n} rows")
+    n_schedules = insert_many(cur, "schedules", ["train_id", "route_id", "departure_time", "arrival_time"], rail_schedules)
+    n_stops = insert_many(cur, "schedule_stops", ["train_id", "station_id", "arrival_time", "departure_time"], rail_stops)
+    print(f"  national_rail_schedules: {n_schedules} rows, stops: {n_stops} rows")
 
 
 def seed_seat_layouts(cur):
