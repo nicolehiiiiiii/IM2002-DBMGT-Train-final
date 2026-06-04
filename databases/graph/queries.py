@@ -139,12 +139,13 @@ def query_cheapest_route(
     cypher = f"""
         MATCH (start:{label} {{station_id: $origin}})
         MATCH (end:{label}   {{station_id: $destination}})
-        CALL apoc.algo.dijkstra(start, end, '{rel}', '{fare_key}')
+        CALL apoc.algo.dijkstra(start, end, '{rel}', 'travel_time_min')
         YIELD path, weight
         RETURN
             [n IN nodes(path) | n.station_id] AS ids,
             [n IN nodes(path) | n.name]       AS names,
-            weight AS total_fare_usd
+            weight AS total_time_min,
+            size(nodes(path)) - 1 AS num_stops
     """
 
     with _driver() as driver:
@@ -154,12 +155,17 @@ def query_cheapest_route(
     if not row:
         return {"found": False, "origin_id": origin_id, "destination_id": destination_id}
 
+    num_stops = row["num_stops"]
+    base_fare = 1.5 if network == "metro" else 2.5
+    per_stop  = 0.5 if network == "metro" else 1.5
+    estimated_fare = round(base_fare + per_stop * num_stops, 2)
+
     stations = [{"station_id": i, "name": n} for i, n in zip(row["ids"], row["names"])]
     return {
         "found":          True,
         "origin_id":      origin_id,
         "destination_id": destination_id,
-        "total_fare_usd": row["total_fare_usd"],
+        "total_fare_usd": estimated_fare,
         "stations":       stations,
     }
 
