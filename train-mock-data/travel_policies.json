@@ -56,7 +56,18 @@
       "Items emitting strong odours that may cause discomfort to other passengers"
     ],
     "smoking_and_vaping": "Strictly prohibited on all metro carriages, platforms, and station concourses.",
-    "noise": "Passengers are asked to keep noise to a considerate level. Use of personal audio devices with external speakers is not permitted."
+    "noise": "Passengers are asked to keep noise to a considerate level. Use of personal audio devices with external speakers is not permitted.",
+    "power_banks_and_batteries": {
+  "power_banks": "Permitted for personal use only.",
+  "damaged_batteries": "Damaged, swollen, leaking, or overheated batteries are prohibited.",
+  "charging": "Passengers should not leave devices unattended while charging.",
+  "e_bike_batteries": "Large detachable e-bike batteries are not permitted on metro services."
+  },
+  "lost_property": {
+  "report_method": "Passengers should report lost property through customer service or the mobile application.",
+  "retention_period_days": 30,
+  "valuable_items": "Valuable items such as wallets, passports, and electronic devices are stored securely and require proof of ownership for collection."
+}
   },
   "national_rail": {
     "bicycles": {
