@@ -1,29 +1,23 @@
 """
-TransitFlow — PostgreSQL / Relational Database Layer
+TransitFlow - PostgreSQL / Relational Database Layer
 =====================================================
 This module handles all queries to PostgreSQL.
 
 TWO ROLES ARE SERVED HERE:
-  1. Relational  → dual-network transit (metro + national rail),
-                   availability, fares, bookings, seat selection
-  2. Vector      → policy document similarity search (pgvector)
+  1. Relational  -> dual-network transit (metro + national rail),
+                    availability, fares, bookings, seat selection
+  2. Vector      -> policy document similarity search (pgvector)
 
-STUDENT TASK
-------------
-Design your schema in databases/relational/schema.sql, seed it with
-skeleton/seed_postgres.py, then implement the query functions below.
-
-Functions prefixed with `query_`  are read-only lookups called by the agent.
-Functions prefixed with `execute_` are write operations (booking/cancellation).
+Functions prefixed with query_  are read-only lookups called by the agent.
+Functions prefixed with execute_ are write operations (booking/cancellation).
 
 The vector functions (query_policy_vector_search, store_policy_document)
-are already implemented — do not modify them.
+are already implemented - do not modify them.
 """
 
 from __future__ import annotations
 
 import bcrypt
-import json
 import random
 import string
 from datetime import datetime, timezone
@@ -52,10 +46,7 @@ def _gen_payment_id() -> str:
     return f"PM-{suffix}"
 
 
-# ── Example ───────────────────────────────────────────────────────────────────
-# The block below shows the query pattern: open a cursor, run SQL, return rows.
-# Use _connect() for read-only queries; for write operations use a manual
-# connection with conn.commit() / conn.rollback() (see execute_booking below).
+# -- Example ------------------------------------------------------------------
 
 def example_query() -> dict:
     """Example: returns the name of the connected database."""
@@ -64,56 +55,70 @@ def example_query() -> dict:
             cur.execute("SELECT current_database() AS db;")
             return dict(cur.fetchone())
 
-# TODO: Implement the query_ and execute_ functions below.
-# ─────────────────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ── NATIONAL RAIL AVAILABILITY ────────────────────────────────────────────────
+# -- NATIONAL RAIL AVAILABILITY -----------------------------------------------
 
 def query_national_rail_availability(
     origin_id: str,
     destination_id: str,
     travel_date: Optional[str] = None,
 ) -> list[dict]:
+    """
+    Return available national rail schedules between origin and destination.
+    Filters by travel date if provided. Only returns schedules where origin
+    appears before destination in stop order.
+
+    Args:
+        origin_id:      e.g. "NR01"
+        destination_id: e.g. "NR05"
+        travel_date:    e.g. "2026-06-01" (optional)
+
+    Returns:
+        List of dicts with schedule_id, line, service_type, departure_time,
+        stops_travelled, available_seats.
+    """
     sql = """
         SELECT
-            s.train_id AS schedule_id,
-            s.route_id,
-            s.departure_time::text,
-            s.arrival_time::text,
-            o.stop_order AS origin_stop_order,
-            d.stop_order AS destination_stop_order,
-            d.stop_order - o.stop_order AS stops_travelled,
-            orig_st.name AS origin_name,
-            dest_st.name AS destination_name,
+            s.schedule_id,
+            s.line,
+            s.service_type,
+            s.first_train_time AS departure_time,
+            origin_stop.stop_order    AS origin_stop_order,
+            dest_stop.stop_order      AS destination_stop_order,
+            dest_stop.stop_order - origin_stop.stop_order AS stops_travelled,
+            (
+                SELECT COUNT(*)
+                FROM national_rail_bookings b
+                WHERE b.schedule_id = s.schedule_id
+                  AND b.status != 'cancelled'
+                  AND (%s IS NULL OR b.travel_date = %s::date)
+            ) AS booked_seats,
             (
                 SELECT COUNT(*)
                 FROM seat_layouts sl
-                WHERE sl.train_id = s.train_id
-            ) AS total_seats,
-            (
-                SELECT COUNT(*)
-                FROM bookings b
-                WHERE b.train_id = s.train_id
-                  AND b.status = 'confirmed'
-                  AND (%s::date IS NULL OR b.travel_date = %s::date)
-            ) AS booked_seats
-        FROM schedules s
-        JOIN schedule_stops o ON o.train_id = s.train_id AND o.station_id = %s
-        JOIN schedule_stops d ON d.train_id = s.train_id AND d.station_id = %s
-        JOIN national_rail_stations orig_st ON orig_st.station_id = %s
-        JOIN national_rail_stations dest_st ON dest_st.station_id = %s
-        WHERE o.stop_order < d.stop_order
+                WHERE sl.schedule_id = s.schedule_id
+            ) AS total_seats
+        FROM national_rail_schedules s
+        JOIN national_rail_schedule_stops origin_stop
+            ON origin_stop.schedule_id = s.schedule_id
+           AND origin_stop.station_id  = %s
+        JOIN national_rail_schedule_stops dest_stop
+            ON dest_stop.schedule_id = s.schedule_id
+           AND dest_stop.station_id  = %s
+        WHERE origin_stop.stop_order < dest_stop.stop_order
+        ORDER BY s.line, s.first_train_time
     """
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, (travel_date, travel_date, origin_id, destination_id, origin_id, destination_id))
-            results = []
-            for r in cur.fetchall():
-                row = dict(r)
-                row["available_seats"] = max(0, row["total_seats"] - row["booked_seats"])
-                results.append(row)
-            return results
+            cur.execute(sql, (travel_date, travel_date, origin_id, destination_id))
+            rows = cur.fetchall()
+
+    results = []
+    for row in rows:
+        d = dict(row)
+        d["available_seats"] = max(0, d["total_seats"] - d["booked_seats"])
+        results.append(d)
+    return results
 
 
 def query_national_rail_fare(
@@ -122,71 +127,161 @@ def query_national_rail_fare(
     stops_travelled: int,
 ) -> Optional[dict]:
     """
-    計算台鐵票價
-    """
-    # 依據標準或商務艙給予基礎票價與每站加計
-    base_fare = 10.0 if fare_class == "first" else 5.0
-    per_stop = 1.5 if fare_class == "first" else 0.8
-    total_fare = base_fare + (per_stop * stops_travelled)
-    
-    return {
-        "fare_class": fare_class,
-        "base_fare_usd": base_fare,
-        "per_stop_rate_usd": per_stop,
-        "total_fare_usd": total_fare
-    }
+    Calculate the fare for a national rail journey.
+    Reads actual rates from national_rail_schedules table.
 
+    Args:
+        schedule_id:     e.g. "NR_SCH01"
+        fare_class:      "standard" or "first"
+        stops_travelled: number of stops between origin and destination
 
-# ── METRO SCHEDULES & FARE ────────────────────────────────────────────────────
-
-def query_metro_schedules(origin_id: str, destination_id: str) -> list[dict]:
-    """
-    查詢捷運班次
+    Returns:
+        Dict with base_fare_usd, per_stop_rate_usd, total_fare_usd.
+        None if schedule_id not found.
     """
     sql = """
-        SELECT train_id AS schedule_id, route_id, departure_time, arrival_time
-        FROM schedules
-        WHERE route_id LIKE 'M%%' OR route_id = 'UNKNOWN'
+        SELECT
+            standard_base_fare_usd,
+            standard_per_stop_rate_usd,
+            first_base_fare_usd,
+            first_per_stop_rate_usd
+        FROM national_rail_schedules
+        WHERE schedule_id = %s
     """
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql)
+            cur.execute(sql, (schedule_id,))
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    if fare_class == "first":
+        base_fare = float(row["first_base_fare_usd"])
+        per_stop  = float(row["first_per_stop_rate_usd"])
+    else:
+        base_fare = float(row["standard_base_fare_usd"])
+        per_stop  = float(row["standard_per_stop_rate_usd"])
+
+    total = round(base_fare + per_stop * stops_travelled, 2)
+
+    return {
+        "base_fare_usd":     base_fare,
+        "per_stop_rate_usd": per_stop,
+        "total_fare_usd":    total,
+    }
+
+
+# -- METRO SCHEDULES & FARE ---------------------------------------------------
+
+def query_metro_schedules(origin_id: str, destination_id: str) -> list[dict]:
+    """
+    Return metro schedules that serve both origin and destination,
+    in correct stop order (origin appears before destination).
+
+    Args:
+        origin_id:      e.g. "MS01"
+        destination_id: e.g. "MS09"
+
+    Returns:
+        List of dicts with schedule_id, line, direction, first_train_time,
+        last_train_time, frequency_min, stops_travelled, base_fare_usd,
+        per_stop_rate_usd.
+    """
+    sql = """
+        SELECT
+            s.schedule_id,
+            s.line,
+            s.direction,
+            s.first_train_time,
+            s.last_train_time,
+            s.frequency_min,
+            s.base_fare_usd,
+            s.per_stop_rate_usd,
+            dest_stop.stop_order - origin_stop.stop_order AS stops_travelled
+        FROM metro_schedules s
+        JOIN metro_schedule_stops origin_stop
+            ON origin_stop.schedule_id = s.schedule_id
+           AND origin_stop.station_id  = %s
+        JOIN metro_schedule_stops dest_stop
+            ON dest_stop.schedule_id = s.schedule_id
+           AND dest_stop.station_id  = %s
+        WHERE origin_stop.stop_order < dest_stop.stop_order
+        ORDER BY s.line, s.first_train_time
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (origin_id, destination_id))
             return [dict(row) for row in cur.fetchall()]
 
 
 def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
     """
-    計算捷運單程票價
+    Calculate the fare for a metro journey.
+    Reads actual rates from metro_schedules table.
+
+    Args:
+        schedule_id:     e.g. "MS_SCH01"
+        stops_travelled: number of stops between origin and destination
+
+    Returns:
+        Dict with base_fare_usd, per_stop_rate_usd, total_fare_usd.
+        None if schedule_id not found.
     """
-    base_fare = 0.80
-    per_stop = 0.30
-    total_fare = base_fare + (per_stop * stops_travelled)
+    sql = """
+        SELECT base_fare_usd, per_stop_rate_usd
+        FROM metro_schedules
+        WHERE schedule_id = %s
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (schedule_id,))
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    base_fare = float(row["base_fare_usd"])
+    per_stop  = float(row["per_stop_rate_usd"])
+    total     = round(base_fare + per_stop * stops_travelled, 2)
+
     return {
-        "base_fare_usd": base_fare,
+        "base_fare_usd":     base_fare,
         "per_stop_rate_usd": per_stop,
-        "total_fare_usd": total_fare
+        "total_fare_usd":    total,
     }
 
 
-# ── SEAT SELECTION ────────────────────────────────────────────────────────────
+# -- SEAT SELECTION -----------------------------------------------------------
 
 def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[str]:
+    """
+    Auto-select adjacent seats from available seats list.
+
+    Args:
+        available_seats: list of seat dicts from query_available_seats
+        count:           number of adjacent seats needed
+
+    Returns:
+        List of seat_id strings.
+    """
     if not available_seats or count <= 0:
         return []
     if count >= len(available_seats):
         return [s["seat_id"] for s in available_seats[:count]]
 
     from collections import defaultdict
-    rows: dict[int, list[dict]] = defaultdict(list)
+    rows: dict = defaultdict(list)
     for seat in available_seats:
-        rows[seat["row"]].append(seat)
+        rows[seat["seat_row"]].append(seat)
 
-    for row_seats in sorted(rows.values(), key=lambda s: s[0]["row"]):
+    for row_seats in sorted(rows.values(), key=lambda s: s[0]["seat_row"]):
         if len(row_seats) >= count:
             return [s["seat_id"] for s in row_seats[:count]]
 
-    sorted_seats = sorted(available_seats, key=lambda s: (s["row"], s["column"]))
+    sorted_seats = sorted(available_seats, key=lambda s: (s["seat_row"], s["seat_column"]))
     return [s["seat_id"] for s in sorted_seats[:count]]
+
 
 def query_available_seats(
     schedule_id: str,
@@ -194,80 +289,68 @@ def query_available_seats(
     fare_class: str,
 ) -> list[dict]:
     """
-    查詢特定日期班次的空位
+    Return seats in the specified fare class that are not yet booked
+    for the given schedule and travel date.
+
+    Args:
+        schedule_id: e.g. "NR_SCH01"
+        travel_date: e.g. "2026-06-01"
+        fare_class:  "standard" or "first"
+
+    Returns:
+        List of dicts with seat_id, coach, fare_class, seat_row, seat_column.
     """
     sql = """
-        SELECT seat_id, coach, 
-               CAST(SUBSTRING(seat_id FROM '[0-9]+') AS INT) as row,
-               SUBSTRING(seat_id FROM '[A-Z]+') as column
-        FROM seat_layouts
-        WHERE train_id = %s 
-          AND coach = CASE WHEN %s = 'first' THEN 'A' ELSE 'B' END
-          AND seat_id NOT IN (
-              SELECT seat_number FROM bookings 
-              WHERE train_id = %s AND status = 'confirmed'
+        SELECT
+            sl.seat_id,
+            sl.coach,
+            sl.fare_class,
+            sl.seat_row,
+            sl.seat_column
+        FROM seat_layouts sl
+        WHERE sl.schedule_id = %s
+          AND sl.fare_class  = %s
+          AND sl.seat_id NOT IN (
+              SELECT b.seat_id
+              FROM national_rail_bookings b
+              WHERE b.schedule_id  = %s
+                AND b.travel_date  = %s::date
+                AND b.status      != 'cancelled'
           )
+        ORDER BY sl.seat_row, sl.seat_column
     """
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # 轉換行列邏輯提供給自動選位演算法
-            cur.execute(sql, (schedule_id, fare_class, schedule_id))
-            rows = cur.fetchall()
-            results = []
-            for r in rows:
-                col_str = r["column"] or "A"
-                col_num = ord(col_str[0]) - ord('A') + 1 if col_str else 1
-                results.append({
-                    "seat_id": r["seat_id"],
-                    "coach": r["coach"],
-                    "row": r["row"] or 1,
-                    "column": col_num
-                })
-            return results
-          
-def auto_select_adjacent_seats(
-    schedule_id: str,
-    travel_date: str,
-    fare_class: str,
-    count: int = 2,
-) -> list[dict]:
-    """
-    自動選取相鄰的空位（例如兩人同行想坐在一起）。
-    
-    Args:
-        schedule_id: 班次 ID，例如 "NR_SCH01"
-        travel_date: 旅遊日期，例如 "2026-06-01"
-        fare_class:  艙等，"standard" 或 "first"
-        count:       需要幾個相鄰座位，預設 2
-    
-    Returns:
-        List of dicts，每個 dict 包含 seat_id、coach、row、column
-    """
-    available = query_available_seats(schedule_id, travel_date, fare_class)
-    if len(available) < count:
-        return []
-    
-    # 依照 coach + row 分組，找同一排有足夠空位的座位
-    from collections import defaultdict
-    by_row = defaultdict(list)
-    for seat in available:
-        key = (seat["coach"], seat["row"])
-        by_row[key].append(seat)
-    
-    for seats_in_row in by_row.values():
-        if len(seats_in_row) >= count:
-            return seats_in_row[:count]
-    
-    # 找不到相鄰的，就回傳前 count 個可用座位
-    return available[:count]
+            cur.execute(sql, (schedule_id, fare_class, schedule_id, travel_date))
+            return [dict(row) for row in cur.fetchall()]
 
-# ── USER & BOOKING QUERIES ────────────────────────────────────────────────────
+
+# -- USER & BOOKING QUERIES ---------------------------------------------------
 
 def query_user_profile(user_email: str) -> Optional[dict]:
     """
-    查詢使用者個人檔案
+    Return a single user profile by email.
+
+    Args:
+        user_email: e.g. "alice.tan@email.com"
+
+    Returns:
+        Dict with user_id, email, first_name, surname, full_name,
+        year_of_birth, phone. None if not found.
     """
-    sql = "SELECT user_id, name, email, phone FROM users WHERE email = %s"
+    sql = """
+        SELECT
+            user_id,
+            email,
+            first_name,
+            surname,
+            first_name || ' ' || surname AS full_name,
+            year_of_birth,
+            phone
+        FROM users
+        WHERE email = %s
+          AND is_active = TRUE
+    """
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, (user_email,))
@@ -277,40 +360,110 @@ def query_user_profile(user_email: str) -> Optional[dict]:
 
 def query_user_bookings(user_email: str) -> dict:
     """
-    查詢使用者的搭乘歷史與訂單
+    Return all bookings and trips for a given user.
+    Both keys are always present even if lists are empty.
+
+    Args:
+        user_email: e.g. "alice.tan@email.com"
+
+    Returns:
+        Dict with keys "national_rail" (list) and "metro" (list).
     """
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # 1. 抓取台鐵訂單
+
             cur.execute("""
-                SELECT b.booking_id, b.train_id, b.seat_number, b.booking_time, b.status 
-                FROM bookings b JOIN users u ON b.user_id = u.user_id WHERE u.email = %s
+                SELECT
+                    b.booking_id,
+                    b.schedule_id,
+                    b.origin_station_id,
+                    b.destination_station_id,
+                    orig.name AS origin_name,
+                    dest.name AS destination_name,
+                    b.travel_date,
+                    b.departure_time,
+                    b.fare_class,
+                    b.ticket_type,
+                    b.stops_travelled,
+                    b.amount_usd,
+                    b.status,
+                    b.booked_at
+                FROM national_rail_bookings b
+                JOIN users u
+                    ON u.user_id = b.user_id
+                JOIN national_rail_stations orig
+                    ON orig.station_id = b.origin_station_id
+                JOIN national_rail_stations dest
+                    ON dest.station_id = b.destination_station_id
+                WHERE u.email = %s
+                ORDER BY b.travel_date DESC
             """, (user_email,))
-            nr = [dict(r) for r in cur.fetchall()]
-            
-            # 2. 抓取捷運搭乘歷史
+            national_rail = [dict(row) for row in cur.fetchall()]
+
             cur.execute("""
-                SELECT m.travel_id, m.station_id, m.travel_time, m.fare 
-                FROM metro_travels m JOIN users u ON m.user_id = u.user_id WHERE u.email = %s
+                SELECT
+                    t.trip_id,
+                    t.schedule_id,
+                    t.origin_station_id,
+                    t.destination_station_id,
+                    orig.name AS origin_name,
+                    dest.name AS destination_name,
+                    t.travel_date,
+                    t.ticket_type,
+                    t.stops_travelled,
+                    t.amount_usd,
+                    t.status,
+                    t.purchased_at
+                FROM metro_trips t
+                JOIN users u
+                    ON u.user_id = t.user_id
+                LEFT JOIN metro_stations orig
+                    ON orig.station_id = t.origin_station_id
+                LEFT JOIN metro_stations dest
+                    ON dest.station_id = t.destination_station_id
+                WHERE u.email = %s
+                ORDER BY t.travel_date DESC
             """, (user_email,))
-            metro = [dict(r) for r in cur.fetchall()]
-            
-            return {"national_rail": nr, "metro": metro}
+            metro = [dict(row) for row in cur.fetchall()]
+
+    return {
+        "national_rail": national_rail,
+        "metro":         metro,
+    }
 
 
 def query_payment_info(booking_id: str) -> Optional[dict]:
     """
-    查詢付款金流紀錄
+    Return payment record for a given booking ID or trip ID.
+
+    Args:
+        booking_id: e.g. "BK001" (national rail) or "MT001" (metro)
+
+    Returns:
+        Dict with payment_id, amount_usd, method, status, paid_at.
+        None if not found.
     """
-    sql = "SELECT payment_id, booking_id, amount, payment_method, status FROM payments WHERE booking_id = %s"
+    sql = """
+        SELECT
+            payment_id,
+            booking_id,
+            trip_id,
+            amount_usd,
+            method,
+            status,
+            paid_at
+        FROM payments
+        WHERE booking_id = %s
+           OR trip_id    = %s
+    """
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, (booking_id,))
+            cur.execute(sql, (booking_id, booking_id))
             row = cur.fetchone()
             return dict(row) if row else None
 
 
-# ── TRANSACTIONAL OPERATIONS ──────────────────────────────────────────────────
+# -- TRANSACTIONAL OPERATIONS -------------------------------------------------
 
 def execute_booking(
     user_id: str,
@@ -323,87 +476,203 @@ def execute_booking(
     ticket_type: str = "single",
 ) -> tuple[bool, dict | str]:
     """
-    執行火車訂位事務交易 (Write Operation)
+    Create a booking and payment record atomically.
+    Both records are committed together - if either fails, both roll back.
+
+    Args:
+        user_id:                e.g. "RU01"
+        schedule_id:            e.g. "NR_SCH01"
+        origin_station_id:      e.g. "NR01"
+        destination_station_id: e.g. "NR05"
+        travel_date:            e.g. "2026-06-01"
+        fare_class:             "standard" or "first"
+        seat_id:                e.g. "B05" or "any" for auto-assign
+        ticket_type:            "single" or "return"
+
+    Returns:
+        (True, booking_dict) on success.
+        (False, error_message) on failure.
     """
+    if seat_id == "any":
+        available = query_available_seats(schedule_id, travel_date, fare_class)
+        if not available:
+            return False, "No seats available for this schedule and date."
+        seat_id = available[0]["seat_id"]
+
+    fare_info = query_national_rail_fare(schedule_id, fare_class, 1)
+    if not fare_info:
+        return False, f"Schedule {schedule_id} not found."
+
+    stops_sql = """
+        SELECT
+            dest.stop_order - orig.stop_order AS stops_travelled
+        FROM national_rail_schedule_stops orig
+        JOIN national_rail_schedule_stops dest
+            ON dest.schedule_id = orig.schedule_id
+        WHERE orig.schedule_id = %s
+          AND orig.station_id  = %s
+          AND dest.station_id  = %s
+          AND orig.stop_order  < dest.stop_order
+    """
+
     b_id = _gen_booking_id()
     p_id = _gen_payment_id()
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    
-    # 計算票價
-    fare_info = query_national_rail_fare(schedule_id, fare_class, 4)
-    amount = fare_info["total_fare_usd"] if fare_info else 15.0
-    
-    # 如果是自動選位，選一個目前可用的
-    actual_seat = seat_id
-    if seat_id == "any":
-        seats = query_available_seats(schedule_id, travel_date, fare_class)
-        if not seats:
-            return False, "No seats available on this train."
-        actual_seat = seats[0]["seat_id"]
+    now  = datetime.now(timezone.utc)
 
-    conn = _connect()
-    conn.autocommit = False # 開啟交易隔離
+    conn = psycopg2.connect(PG_DSN)
+    conn.autocommit = False
     try:
-        with conn.cursor() as cur:
-            # 寫入訂單表
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+
             cur.execute("""
-                INSERT INTO bookings (booking_id, user_id, train_id, seat_number, booking_time, status)
-                VALUES (%s, %s, %s, %s, %s, 'confirmed')
-            """, (b_id, user_id, schedule_id, actual_seat, now_str))
-            
-            # 寫入付款金流表
+                SELECT seat_id FROM national_rail_bookings
+                WHERE schedule_id = %s
+                  AND travel_date = %s::date
+                  AND seat_id     = %s
+                  AND status     != 'cancelled'
+            """, (schedule_id, travel_date, seat_id))
+            if cur.fetchone():
+                conn.rollback()
+                return False, f"Seat {seat_id} is already booked for this date."
+
+            cur.execute(stops_sql, (schedule_id, origin_station_id, destination_station_id))
+            stops_row = cur.fetchone()
+            stops_travelled = stops_row["stops_travelled"] if stops_row else 1
+
+            fare_info = query_national_rail_fare(schedule_id, fare_class, stops_travelled)
+            amount    = fare_info["total_fare_usd"]
+
             cur.execute("""
-                INSERT INTO payments (payment_id, booking_id, amount, payment_method, status)
-                VALUES (%s, %s, %s, 'Credit Card', 'completed')
-            """, (p_id, b_id, amount))
-            
+                INSERT INTO national_rail_bookings (
+                    booking_id, user_id, schedule_id,
+                    origin_station_id, destination_station_id,
+                    seat_id, travel_date, ticket_type,
+                    fare_class, stops_travelled, amount_usd,
+                    status, booked_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s::date, %s, %s, %s, %s, 'confirmed', %s)
+            """, (
+                b_id, user_id, schedule_id,
+                origin_station_id, destination_station_id,
+                seat_id, travel_date, ticket_type,
+                fare_class, stops_travelled, amount, now
+            ))
+
+            cur.execute("""
+                INSERT INTO payments (
+                    payment_id, booking_id, trip_id,
+                    amount_usd, method, status, paid_at
+                ) VALUES (%s, %s, NULL, %s, 'credit_card', 'paid', %s)
+            """, (p_id, b_id, amount, now))
+
         conn.commit()
         return True, {
-            "booking_id": b_id,
-            "train_id": schedule_id,
-            "seat_number": actual_seat,
-            "status": "confirmed",
-            "amount_paid": amount
+            "booking_id":              b_id,
+            "user_id":                 user_id,
+            "schedule_id":             schedule_id,
+            "seat_id":                 seat_id,
+            "origin_station_id":       origin_station_id,
+            "destination_station_id":  destination_station_id,
+            "travel_date":             travel_date,
+            "fare_class":              fare_class,
+            "stops_travelled":         stops_travelled,
+            "amount_usd":              amount,
+            "status":                  "confirmed",
         }
+
     except Exception as e:
         conn.rollback()
-        return False, f"Booking transaction failed: {str(e)}"
+        return False, f"Booking failed: {str(e)}"
     finally:
         conn.close()
 
 
 def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | str]:
     """
-    取消訂單與退款交易
+    Cancel a booking and calculate refund based on cancellation policy.
+    Updates booking status and payment status atomically.
+
+    Args:
+        booking_id: e.g. "BK001"
+        user_id:    e.g. "RU01"
+
+    Returns:
+        (True, result_dict) on success.
+        (False, error_message) on failure.
     """
-    conn = _connect()
+    conn = psycopg2.connect(PG_DSN)
     conn.autocommit = False
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # 檢查這筆訂單是否存在
-            cur.execute("SELECT train_id FROM bookings WHERE booking_id = %s AND user_id = %s", (booking_id, user_id))
-            b = cur.fetchone()
-            if not b:
-                return False, "Booking record not found."
-                
-            # 抓取付款金額來辦理退款
-            cur.execute("SELECT amount FROM payments WHERE booking_id = %s", (booking_id,))
-            p = cur.fetchone()
-            base_amount = p["amount"] if p else 10.0
-            
-            # 模擬計算退款退 75%
-            refund_amount = float(base_amount) * 0.75
-            
-            # 更新訂單狀態為已取消
-            cur.execute("UPDATE bookings SET status = 'cancelled' WHERE booking_id = %s", (booking_id,))
-            cur.execute("UPDATE payments SET status = 'refunded' WHERE booking_id = %s", (booking_id,))
-            
+
+            cur.execute("""
+                SELECT
+                    b.booking_id,
+                    b.user_id,
+                    b.amount_usd,
+                    b.status,
+                    b.travel_date,
+                    b.booked_at,
+                    s.service_type
+                FROM national_rail_bookings b
+                JOIN national_rail_schedules s
+                    ON s.schedule_id = b.schedule_id
+                WHERE b.booking_id = %s
+                  AND b.user_id    = %s
+            """, (booking_id, user_id))
+            booking = cur.fetchone()
+
+            if not booking:
+                return False, "Booking not found or does not belong to this user."
+
+            if booking["status"] == "cancelled":
+                return False, "Booking is already cancelled."
+
+            import datetime as dt
+            travel_date = booking["travel_date"]
+            travel_dt = dt.datetime.combine(travel_date, dt.time(0, 0))
+            travel_dt = travel_dt.replace(tzinfo=timezone.utc)
+            hours_until = (travel_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+
+            amount = float(booking["amount_usd"])
+            if hours_until >= 48:
+                refund_percent = 100
+                admin_fee      = 0.00
+            elif hours_until >= 24:
+                refund_percent = 75
+                admin_fee      = 0.50
+            elif hours_until >= 2:
+                refund_percent = 50
+                admin_fee      = 0.50
+            else:
+                refund_percent = 0
+                admin_fee      = 0.00
+
+            refund_amount = round(amount * refund_percent / 100 - admin_fee, 2)
+            refund_amount = max(0.0, refund_amount)
+
+            cur.execute("""
+                UPDATE national_rail_bookings
+                SET status = 'cancelled'
+                WHERE booking_id = %s
+            """, (booking_id,))
+
+            cur.execute("""
+                UPDATE payments
+                SET status = 'refunded'
+                WHERE booking_id = %s
+            """, (booking_id,))
+
         conn.commit()
         return True, {
-            "booking_id": booking_id,
-            "refund_amount_usd": refund_amount,
-            "policy_note": "Cancelled within regular windows. 75% refund applied."
+            "booking_id":      booking_id,
+            "original_amount": amount,
+            "refund_percent":  refund_percent,
+            "admin_fee":       admin_fee,
+            "refund_amount":   refund_amount,
+            "policy_note":     f"Cancelled {round(hours_until)}h before departure. "
+                               f"{refund_percent}% refund applied.",
         }
+
     except Exception as e:
         conn.rollback()
         return False, f"Cancellation failed: {str(e)}"
@@ -411,7 +680,7 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         conn.close()
 
 
-# ── AUTHENTICATION QUERIES ────────────────────────────────────────────────────
+# -- AUTHENTICATION QUERIES ---------------------------------------------------
 
 def register_user(
     email: str,
@@ -423,94 +692,156 @@ def register_user(
     secret_answer: str,
 ) -> tuple[bool, str]:
     """
-    註冊新使用者（完美符合 bcrypt 雜湊加密規格）
+    Register a new user. Password is hashed with bcrypt before storing.
+
+    Args:
+        email:           e.g. "newuser@email.com"
+        first_name:      e.g. "Alice"
+        surname:         e.g. "Tan"
+        year_of_birth:   e.g. 1990
+        password:        plain text password
+        secret_question: e.g. "What was the name of your first pet?"
+        secret_answer:   e.g. "Biscuit"
+
+    Returns:
+        (True, user_id) on success.
+        (False, error_message) on failure.
     """
-    u_id = f"RU{random.randint(10, 99)}"
-    full_name = f"{first_name} {surname}"
-    
-    # 使用 bcrypt 生成安全鹽值並進行雜湊
-    bytes_pwd = password.encode('utf-8')
-    salt = bcrypt.gensalt()
-    hashed_pwd = bcrypt.hashpw(bytes_pwd, salt).decode('utf-8')
-    
-    conn = _connect()
-    try:
+    hashed = bcrypt.hashpw(
+        password.encode("utf-8"),
+        bcrypt.gensalt()
+    ).decode("utf-8")
+
+    user_id = f"RU{random.randint(21, 99)}"
+
+    sql = """
+        INSERT INTO users (
+            user_id, email, first_name, surname,
+            year_of_birth, password,
+            secret_question, secret_answer
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    with _connect() as conn:
         with conn.cursor() as cur:
-            # 🌟 同步把安全問題與答案寫進 users 資料表（請確保 schema.sql 的 users 表有這些欄位）
-            cur.execute("""
-                INSERT INTO users (user_id, name, email, phone, password, secret_question, secret_answer)
-                VALUES (%s, %s, %s, '0912345678', %s, %s, %s)
-            """, (u_id, full_name, email, hashed_pwd, secret_question, secret_answer))
-        return True, u_id
-    except Exception as e:
-        return False, str(e)
-    finally:
-        conn.close()
+            try:
+                cur.execute(sql, (
+                    user_id, email.strip().lower(),
+                    first_name.strip(), surname.strip(),
+                    year_of_birth, hashed,
+                    secret_question, secret_answer.strip()
+                ))
+                return True, user_id
+            except psycopg2.errors.UniqueViolation:
+                return False, "An account with this email already exists."
 
 
 def login_user(email: str, password: str) -> Optional[dict]:
     """
-    使用者登入驗證（比對 bcrypt 雜湊值）
+    Verify email and password. Uses bcrypt to compare against stored hash.
+
+    Args:
+        email:    e.g. "alice.tan@email.com"
+        password: plain text password
+
+    Returns:
+        User dict on success, None if email not found or password wrong.
     """
-    sql = "SELECT user_id, name, email, password FROM users WHERE email = %s"
+    sql = """
+        SELECT user_id, email, first_name, surname,
+               first_name || ' ' || surname AS full_name,
+               password, year_of_birth
+        FROM users
+        WHERE email = %s AND is_active = TRUE
+    """
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, (email,))
+            cur.execute(sql, (email.strip().lower(),))
             row = cur.fetchone()
-            if row:
-                stored_hash = row["password"]
-                if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
-                    return {
-                        "user_id": row["user_id"],
-                        "email": row["email"],
-                        "full_name": row["name"],
-                        "is_active": True
-                    }
-            return None
+
+    if not row:
+        return None
+
+    if not bcrypt.checkpw(password.encode("utf-8"), row["password"].encode("utf-8")):
+        return None
+
+    return {
+        "user_id":       row["user_id"],
+        "email":         row["email"],
+        "first_name":    row["first_name"],
+        "surname":       row["surname"],
+        "full_name":     row["full_name"],
+        "year_of_birth": row["year_of_birth"],
+    }
 
 
 def get_user_secret_question(email: str) -> Optional[str]:
     """
-    忘記密碼：自資料庫查詢使用者的安全提示問題
+    Return the secret question for a given email, or None if not found.
+
+    Args:
+        email: e.g. "alice.tan@email.com"
+
+    Returns:
+        Secret question string, or None.
     """
-    sql = "SELECT secret_question FROM users WHERE email = %s"
+    sql = "SELECT secret_question FROM users WHERE email = %s AND is_active = TRUE"
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (email,))
+            cur.execute(sql, (email.strip().lower(),))
             row = cur.fetchone()
             return row[0] if row else None
 
 
 def verify_secret_answer(email: str, answer: str) -> bool:
     """
-    忘記密碼：比對儲存的安全提示答案（不區分大小寫）
+    Check if the provided answer matches the stored secret answer.
+    Comparison is case-insensitive.
+
+    Args:
+        email:  e.g. "alice.tan@email.com"
+        answer: the user answer to their secret question
+
+    Returns:
+        True if answer matches, False otherwise.
     """
-    sql = "SELECT secret_answer FROM users WHERE email = %s"
+    sql = "SELECT secret_answer FROM users WHERE email = %s AND is_active = TRUE"
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (email,))
+            cur.execute(sql, (email.strip().lower(),))
             row = cur.fetchone()
-            if row and row[0]:
-                return row[0].lower() == answer.lower()
-            return False
+
+    if not row:
+        return False
+    return row[0].strip().lower() == answer.strip().lower()
 
 
 def update_password(email: str, new_password: str) -> bool:
     """
-    變更密碼：使用 bcrypt 重新雜湊並寫入資料庫
+    Update the user password. New password is hashed with bcrypt.
+
+    Args:
+        email:        e.g. "alice.tan@email.com"
+        new_password: plain text new password
+
+    Returns:
+        True if updated successfully, False if user not found.
     """
-    bytes_pwd = new_password.encode('utf-8')
-    salt = bcrypt.gensalt()
-    hashed_pwd = bcrypt.hashpw(bytes_pwd, salt).decode('utf-8')
-    
-    sql = "UPDATE users SET password = %s WHERE email = %s"
+    hashed = bcrypt.hashpw(
+        new_password.encode("utf-8"),
+        bcrypt.gensalt()
+    ).decode("utf-8")
+
+    sql = """
+        UPDATE users SET password = %s
+        WHERE email = %s AND is_active = TRUE
+    """
     with _connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (hashed_pwd, email))
+            cur.execute(sql, (hashed, email.strip().lower()))
             return cur.rowcount > 0
 
 
-# ── VECTOR / RAG QUERIES — do not modify ─────────────────────────────────────
+# -- VECTOR / RAG QUERIES - do not modify -------------------------------------
 
 def query_policy_vector_search(embedding: list[float], top_k: int = VECTOR_TOP_K) -> list[dict]:
     """
@@ -550,10 +881,10 @@ def store_policy_document(
 ) -> int:
     """
     Insert a policy document with its embedding into the database.
-    Used by skeleton/seed_vectors.py — students don't need to call this directly.
+    Used by skeleton/seed_vectors.py - students do not need to call this directly.
 
     Returns:
-        The new document's id
+        The new document id
     """
     sql = """
         INSERT INTO policy_documents (title, category, content, embedding, source_file)
