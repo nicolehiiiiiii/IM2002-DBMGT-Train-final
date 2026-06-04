@@ -22,6 +22,7 @@ are already implemented — do not modify them.
 
 from __future__ import annotations
 
+import bcrypt
 import json
 import random
 import string
@@ -153,6 +154,24 @@ def query_metro_fare(schedule_id: str, stops_travelled: int) -> Optional[dict]:
 
 
 # ── SEAT SELECTION ────────────────────────────────────────────────────────────
+
+def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[str]:
+    if not available_seats or count <= 0:
+        return []
+    if count >= len(available_seats):
+        return [s["seat_id"] for s in available_seats[:count]]
+
+    from collections import defaultdict
+    rows: dict[int, list[dict]] = defaultdict(list)
+    for seat in available_seats:
+        rows[seat["row"]].append(seat)
+
+    for row_seats in sorted(rows.values(), key=lambda s: s[0]["row"]):
+        if len(row_seats) >= count:
+            return [s["seat_id"] for s in row_seats[:count]]
+
+    sorted_seats = sorted(available_seats, key=lambda s: (s["row"], s["column"]))
+    return [s["seat_id"] for s in sorted_seats[:count]]
 
 def query_available_seats(
     schedule_id: str,
@@ -354,18 +373,24 @@ def register_user(
     secret_answer: str,
 ) -> tuple[bool, str]:
     """
-    註冊新使用者
+    註冊新使用者（完美符合 bcrypt 雜湊加密規格）
     """
     u_id = f"RU{random.randint(10, 99)}"
     full_name = f"{first_name} {surname}"
     
+    # 使用 bcrypt 生成安全鹽值並進行雜湊
+    bytes_pwd = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed_pwd = bcrypt.hashpw(bytes_pwd, salt).decode('utf-8')
+    
     conn = _connect()
     try:
         with conn.cursor() as cur:
+            # 🌟 同步把安全問題與答案寫進 users 資料表（請確保 schema.sql 的 users 表有這些欄位）
             cur.execute("""
-                INSERT INTO users (user_id, name, email, phone)
-                VALUES (%s, %s, %s, '0912345678')
-            """, (u_id, full_name, email))
+                INSERT INTO users (user_id, name, email, phone, password, secret_question, secret_answer)
+                VALUES (%s, %s, %s, '0912345678', %s, %s, %s)
+            """, (u_id, full_name, email, hashed_pwd, secret_question, secret_answer))
         return True, u_id
     except Exception as e:
         return False, str(e)
@@ -375,44 +400,65 @@ def register_user(
 
 def login_user(email: str, password: str) -> Optional[dict]:
     """
-    使用者登入驗證
+    使用者登入驗證（比對 bcrypt 雜湊值）
     """
-    sql = "SELECT user_id, name, email FROM users WHERE email = %s"
+    sql = "SELECT user_id, name, email, password FROM users WHERE email = %s"
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, (email,))
             row = cur.fetchone()
             if row:
-                return {
-                    "user_id": row["user_id"],
-                    "email": row["email"],
-                    "full_name": row["name"],
-                    "is_active": True
-                }
+                stored_hash = row["password"]
+                if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
+                    return {
+                        "user_id": row["user_id"],
+                        "email": row["email"],
+                        "full_name": row["name"],
+                        "is_active": True
+                    }
             return None
 
 
 def get_user_secret_question(email: str) -> Optional[str]:
     """
-    忘記密碼：安全提示問題
+    忘記密碼：自資料庫查詢使用者的安全提示問題
     """
-    return "What is your favorite transit network?"
+    sql = "SELECT secret_question FROM users WHERE email = %s"
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (email,))
+            row = cur.fetchone()
+            return row[0] if row else None
 
 
 def verify_secret_answer(email: str, answer: str) -> bool:
     """
-    忘記密碼：驗證安全提示答案
+    忘記密碼：比對儲存的安全提示答案（不區分大小寫）
     """
-    return answer.lower() == "transitflow"
+    sql = "SELECT secret_answer FROM users WHERE email = %s"
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (email,))
+            row = cur.fetchone()
+            if row and row[0]:
+                return row[0].lower() == answer.lower()
+            return False
 
 
 def update_password(email: str, new_password: str) -> bool:
     """
-    變更密碼
+    變更密碼：使用 bcrypt 重新雜湊並寫入資料庫
     """
-    return True
+    bytes_pwd = new_password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed_pwd = bcrypt.hashpw(bytes_pwd, salt).decode('utf-8')
+    
+    sql = "UPDATE users SET password = %s WHERE email = %s"
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (hashed_pwd, email))
+            return cur.rowcount > 0
 
-# ─────────────────────────────────────────────────────────────────────────────
 
 # ── VECTOR / RAG QUERIES — do not modify ─────────────────────────────────────
 
