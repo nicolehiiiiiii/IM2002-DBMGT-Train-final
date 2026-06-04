@@ -106,17 +106,23 @@ def seed_national_rail_schedules(cur):
     rail_data = load("national_rail_schedules.json")
     rail_schedules = []
     rail_stops = []
-    
+
     for s in rail_data:
-        t_id = s.get("train_id") or s.get("id") or list(s.values())[0]
-        rail_schedules.append((t_id, s.get("route_id", "UNKNOWN"), s.get("departure_time", "00:00"), s.get("arrival_time", "00:00")))
-        
-        for stop in s.get("stops", []):
-            rail_stops.append((t_id, stop.get("station_id"), stop.get("arrival_time"), stop.get("departure_time")))
+        t_id = s["schedule_id"]
+        route_id = s.get("line", "UNKNOWN")
+        dep_time = s.get("first_train_time", "00:00")
+        arr_time = s.get("last_train_time", "00:00")
+        rail_schedules.append((t_id, route_id, dep_time, arr_time))
+
+        travel_times = s.get("travel_time_from_origin_min", {})
+        for station_id in s.get("stops_in_order", []):
+            offset = travel_times.get(station_id, 0)
+            time_str = f"+{offset}m"
+            rail_stops.append((t_id, station_id, time_str, time_str))
 
     n_schedules = insert_many(cur, "schedules", ["train_id", "route_id", "departure_time", "arrival_time"], rail_schedules)
     n_stops = insert_many(cur, "schedule_stops", ["train_id", "station_id", "arrival_time", "departure_time"], rail_stops)
-    print(f"  national_rail_schedules: {n_schedules} rows")
+    print(f"  national_rail_schedules: {n_schedules} rows, stops: {n_stops} rows")
 
 
 def seed_seat_layouts(cur):
