@@ -65,16 +65,17 @@ CREATE TABLE IF NOT EXISTS national_rail_stations (
 CREATE TABLE IF NOT EXISTS schedules (
     train_id        VARCHAR(20) PRIMARY KEY,
     route_id        VARCHAR(20) NOT NULL,
-    departure_time  VARCHAR(10) NOT NULL,
-    arrival_time    VARCHAR(10) NOT NULL
+    departure_time  TIME NOT NULL,  
+    arrival_time    TIME NOT NULL    
 );
 
 CREATE TABLE IF NOT EXISTS schedule_stops (
     id              SERIAL PRIMARY KEY,
     train_id        VARCHAR(20) REFERENCES schedules(train_id) ON DELETE CASCADE,
     station_id      VARCHAR(10) NOT NULL,
-    arrival_time    VARCHAR(10),
-    departure_time  VARCHAR(10)
+    arrival_time    TIME,
+    departure_time  TIME,
+    stop_order      INT NOT NULL    
 );
 
 CREATE TABLE IF NOT EXISTS bookings (
@@ -82,8 +83,9 @@ CREATE TABLE IF NOT EXISTS bookings (
     user_id       VARCHAR(20) NOT NULL,
     train_id      VARCHAR(20) REFERENCES schedules(train_id) ON DELETE CASCADE,
     seat_number   VARCHAR(10) NOT NULL,
-    booking_time  VARCHAR(30) NOT NULL,
-    status        VARCHAR(20) NOT NULL
+    booking_time  TIMESTAMPTZ NOT NULL,   
+    travel_date   DATE,                
+    status        VARCHAR(20) NOT NULL CHECK (status IN ('confirmed', 'completed', 'cancelled'))
 );
 
 -- 1. 座位配置表
@@ -108,7 +110,7 @@ CREATE TABLE IF NOT EXISTS metro_travels (
     travel_id       VARCHAR(20) PRIMARY KEY,
     user_id         VARCHAR(20) NOT NULL,
     station_id      VARCHAR(10) NOT NULL,
-    travel_time     VARCHAR(30) NOT NULL,
+    travel_time     TIMESTAMPTZ NOT NULL,  
     fare            NUMERIC(6, 2)
 );
 
@@ -125,10 +127,19 @@ CREATE TABLE IF NOT EXISTS payments (
 CREATE TABLE IF NOT EXISTS feedback (
     feedback_id     VARCHAR(20) PRIMARY KEY,
     user_id         VARCHAR(20) NOT NULL,
-    rating          INT NOT NULL,
+    rating          INT NOT NULL CHECK (rating BETWEEN 1 AND 5),
     comment         TEXT,
-    created_at      VARCHAR(30)
+    created_at      TIMESTAMPTZ DEFAULT NOW()   
 );
 
+CREATE TABLE IF NOT EXISTS users (
+    user_id          VARCHAR(20) PRIMARY KEY,
+    name             VARCHAR(100) NOT NULL,
+    email            VARCHAR(100) UNIQUE,
+    phone            VARCHAR(20),
+    password         VARCHAR(100),        -- bcrypt hash
+    secret_question  TEXT,
+    secret_answer    TEXT
+);
 -- Index for fast cosine similarity search
 CREATE INDEX IF NOT EXISTS policy_docs_hnsw_idx ON policy_documents USING hnsw (embedding vector_cosine_ops);

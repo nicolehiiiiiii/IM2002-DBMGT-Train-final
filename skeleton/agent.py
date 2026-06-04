@@ -110,6 +110,13 @@ LOGIN RULE: Routes, fares, schedules, and policies work WITHOUT login for all us
 When DATA FROM TRANSITFLOW DATABASE is provided, use it as the only source of truth. Do not contradict it or say a route was not found if the data shows one.
 For route results: list every station name in order, note any line changes, and give the total travel time.
 Always reply in the same language as the user.
+
+For national rail availability results:
+- departure_time and arrival_time are the FIRST and LAST train of the day, not journey duration.
+- stops_travelled is the number of stops between origin and destination.
+- Do NOT calculate journey duration from departure_time and arrival_time.
+- available_seats shows how many seats are free on that schedule.
+- A schedule with available_seats = 0 means fully booked.
 """.format(today=date.today().isoformat())
 
 
@@ -698,11 +705,8 @@ JSON:"""
         tool_name = call.get("name", "")
         params    = call.get("params") or call.get("parameters", {})
 
-        # Skip calls with empty string values — LLM failed to extract params
-        if any(v == "" for v in params.values()):
-            if debug:
-                debug_info.append(f"**Skipped** `{tool_name}` — empty params: {params}")
-            continue
+        # 把空字串的參數改成 None，避免選填欄位導致整個 tool call 被跳過
+        params = {k: (None if v == "" else v) for k, v in params.items()}
 
         if debug:
             debug_info.append(f"**Calling:** `{tool_name}({params})`")

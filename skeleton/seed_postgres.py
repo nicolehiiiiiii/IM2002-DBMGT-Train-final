@@ -90,33 +90,44 @@ def seed_metro_schedules(cur):
         t_id = s["schedule_id"]
         dep_time = s.get("first_train_time", "05:30")
         arr_time = s.get("last_train_time", "23:30")
-        
         metro_schedules.append((t_id, s.get("line", "M1"), dep_time, arr_time))
         
-        for station in s.get("stops_in_order", []):
-            offset = s.get("travel_time_from_origin_min", {}).get(station, 0)
-            metro_stops.append((t_id, station, f"+{offset}m", f"+{offset}m"))
+        for idx, station in enumerate(s.get("stops_in_order", []), start=1):
+            travel_times = s.get("travel_time_from_origin_min", {})
+            offset = travel_times.get(station, 0)
+            metro_stops.append((t_id, station, None, None, idx))  
 
-    n_schedules = insert_many(cur, "schedules", ["train_id", "route_id", "departure_time", "arrival_time"], metro_schedules)
-    n_stops = insert_many(cur, "schedule_stops", ["train_id", "station_id", "arrival_time", "departure_time"], metro_stops)
-    print(f"  metro_schedules: {n_schedules} rows")
+    insert_many(cur, "schedules",
+                ["train_id", "route_id", "departure_time", "arrival_time"],
+                metro_schedules)
+    n = insert_many(cur, "schedule_stops",
+                    ["train_id", "station_id", "arrival_time", "departure_time", "stop_order"],
+                    metro_stops)
+    print(f"  metro_schedules: {len(metro_schedules)} rows, stops: {n} rows")
 
 
 def seed_national_rail_schedules(cur):
     rail_data = load("national_rail_schedules.json")
     rail_schedules = []
     rail_stops = []
-    
-    for s in rail_data:
-        t_id = s.get("train_id") or s.get("id") or list(s.values())[0]
-        rail_schedules.append((t_id, s.get("route_id", "UNKNOWN"), s.get("departure_time", "00:00"), s.get("arrival_time", "00:00")))
-        
-        for stop in s.get("stops", []):
-            rail_stops.append((t_id, stop.get("station_id"), stop.get("arrival_time"), stop.get("departure_time")))
 
-    n_schedules = insert_many(cur, "schedules", ["train_id", "route_id", "departure_time", "arrival_time"], rail_schedules)
-    n_stops = insert_many(cur, "schedule_stops", ["train_id", "station_id", "arrival_time", "departure_time"], rail_stops)
-    print(f"  national_rail_schedules: {n_schedules} rows")
+    for s in rail_data:
+        t_id = s["schedule_id"]
+        route_id = s.get("line", "UNKNOWN")
+        dep_time = s.get("first_train_time", "00:00")
+        arr_time = s.get("last_train_time", "00:00")
+        rail_schedules.append((t_id, route_id, dep_time, arr_time))
+
+        for idx, station_id in enumerate(s.get("stops_in_order", []), start=1):
+            rail_stops.append((t_id, station_id, None, None, idx))  
+
+    insert_many(cur, "schedules",
+                ["train_id", "route_id", "departure_time", "arrival_time"],
+                rail_schedules)
+    n = insert_many(cur, "schedule_stops",
+                    ["train_id", "station_id", "arrival_time", "departure_time", "stop_order"],
+                    rail_stops)
+    print(f"  national_rail_schedules: {len(rail_schedules)} rows, stops: {n} rows")
 
 
 def seed_seat_layouts(cur):
@@ -159,17 +170,24 @@ def seed_seat_layouts(cur):
 
 
 def seed_users(cur):
+    import bcrypt
     data = load("registered_users.json")
-    rows = [
-        (
-            u.get("user_id") or list(u.values())[0], 
-            u.get("name") or u.get("username") or u.get("display_name") or "Anonymous", 
-            u.get("email"), 
-            u.get("phone")
-        ) 
-        for u in data
-    ]
-    n = insert_many(cur, "users", ["user_id", "name", "email", "phone"], rows)
+    rows = []
+    for u in data:
+        password_plain = u.get("password", "password123")
+        hashed = bcrypt.hashpw(password_plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        rows.append((
+            u["user_id"],
+            u["full_name"],
+            u["email"],
+            u.get("phone"),
+            hashed,
+            u.get("secret_question"),
+            u.get("secret_answer"),
+        ))
+    n = insert_many(cur, "users",
+                    ["user_id", "name", "email", "phone", "password", "secret_question", "secret_answer"],
+                    rows)
     print(f"  users: {n} rows")
 
 
@@ -177,16 +195,20 @@ def seed_national_rail_bookings(cur):
     data = load("bookings.json")
     rows = [
         (
-            b["booking_id"], 
-            b["user_id"], 
-            b["schedule_id"], 
-            b["seat_id"], 
-            b["booked_at"], 
+            b["booking_id"],
+            b["user_id"],
+            b["schedule_id"],
+            b["seat_id"],
+            b["booked_at"],      
+            b.get("travel_date"),
             b["status"]
         )
         for b in data
     ]
-    n = insert_many(cur, "bookings", ["booking_id", "user_id", "train_id", "seat_number", "booking_time", "status"], rows)
+    n = insert_many(cur, "bookings",
+                    ["booking_id", "user_id", "train_id", "seat_number",
+                     "booking_time", "travel_date", "status"],
+                    rows)
     print(f"  bookings: {n} rows")
 
 
@@ -194,16 +216,17 @@ def seed_metro_travels(cur):
     data = load("metro_travel_history.json")
     rows = [
         (
-            t.get("travel_id") or list(t.values())[0], 
-            t.get("user_id"), 
-            # ⭐ 擴大防禦：相容各種可能的車站欄位名稱
-            t.get("station_id") or t.get("station") or t.get("metro_station_id") or t.get("origin_station_id") or "UNKNOWN", 
-            t.get("travel_time") or t.get("timestamp") or "2026-05-29 00:00:00", 
-            t.get("fare") or t.get("amount") or 0
-        ) 
+            t["trip_id"],
+            t["user_id"],
+            t["origin_station_id"],
+            t.get("travelled_at") or "2026-05-29 00:00:00+00",
+            t.get("amount_usd") or 0
+        )
         for t in data
     ]
-    n = insert_many(cur, "metro_travels", ["travel_id", "user_id", "station_id", "travel_time", "fare"], rows)
+    n = insert_many(cur, "metro_travels",
+                    ["travel_id", "user_id", "station_id", "travel_time", "fare"],
+                    rows)
     print(f"  metro_travels: {n} rows")
 
 
