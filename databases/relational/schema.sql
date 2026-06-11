@@ -214,8 +214,7 @@ CREATE TABLE IF NOT EXISTS metro_trips (
     amount_usd   DECIMAL(6,2)  NOT NULL,
     status       VARCHAR(20)   NOT NULL DEFAULT 'completed'
                  CHECK (status IN ('completed', 'cancelled')),
-    purchased_at TIMESTAMPTZdocker exec -it transitflow_postgres_v2a psql -U transitflow -d transitflow -c "SELECT COUNT(*) FROM users; SELECT COUNT(*) FROM national_rail_bookings; SELECT COUNT(*) FROM metro_trips; SELECT COUNT(*) FROM payments;",
-    travelled_at TIMESTAMPTZ,
+    purchased_at TIMESTAMPTZ,
     -- 自我參照 FK：day_pass 的後續搭乘紀錄指向原始購買那筆
     day_pass_ref VARCHAR(20)
         REFERENCES metro_trips(trip_id)
